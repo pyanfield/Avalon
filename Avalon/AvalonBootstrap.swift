@@ -12,5 +12,7 @@ import Foundation
   override class func load() {
     AVSwizzle.swizzleClass(UISearchBar.self, method: "setDelegate:")
     AVSwizzle.swizzleClass(UISearchBar.self, method: "delegate")
+    AVSwizzle.swizzleClass(UITableView.self, method: "setDelegate:")
+    AVSwizzle.swizzleClass(UITableView.self, method: "delegate")
   }
 }

@@ -13,12 +13,10 @@ extension UITableView {
   
   public var items: [NSObject] {
     get {
-      let source = objc_getAssociatedObject(self, &AssociationKey.items) as? TableViewSource
-      return source != nil ? source!.items : [NSObject]()
+      return tableViewSource.items
     }
     set(newValue) {
-      let source = TableViewSource(tableView: self, items: newValue)
-      objc_setAssociatedObject(self, &AssociationKey.items, source, UInt(OBJC_ASSOCIATION_RETAIN))
+      tableViewSource.items = newValue
     }
   }
   
@@ -32,31 +30,76 @@ extension UITableView {
   }
 }
 
-private class TableViewSource: NSObject, UITableViewDataSource, UITableViewDelegate {
+extension UITableView {
+  var tableViewSource: TableViewSource {
+    return lazyAssociatedProperty(self, &AssociationKey.tableViewSource) {
+      return TableViewSource(tableView: self)
+    }
+  }
   
-  var items: [NSObject]
+  // a multiplexer that provides forwarding
+  var delegateMultiplexer: TableViewDelegateMultiplex {
+    return lazyAssociatedProperty(self, &AssociationKey.delegateProxy) {
+      let multiplexer = TableViewDelegateMultiplex()
+      self.override_setDelegate(multiplexer)
+      return multiplexer
+    }
+  }
+  
+  // the swizzled delegate API methods
+  func override_setDelegate(delegate: AnyObject) {
+    delegateMultiplexer.delegate = delegate
+  }
+  func override_delegate() -> UITableViewDelegate? {
+    // don't invoke delegateMultiplexer getter in order to check for nil, this
+    // can cause a circular invocation
+    if objc_getAssociatedObject(self, &AssociationKey.delegateProxy) == nil {
+      return nil
+    } else {
+      return delegateMultiplexer.delegate as UITableViewDelegate?
+    }
+  }
+}
+
+// unfortunately because UITableViewDelegate 'inherits' from UIScrollViewDelegate, something
+// fishy goes on with the generic delegate forwarding provided by AVDelegateMultiplexer. As a result
+// it only forwards UIScrollView delegate methods. As a quick-fix, this class provides
+// forwarding of UITableViewDelegate methods. Yuck!
+class TableViewDelegateMultiplex: AVDelegateMultiplexer, UITableViewDelegate {
+  
+  func tableView(tableView: UITableView, didSelectRowAtIndexPath indexPath: NSIndexPath) {
+    delegate?.tableView(tableView, didSelectRowAtIndexPath: indexPath)
+    proxiedDelegate?.tableView(tableView, didSelectRowAtIndexPath: indexPath)
+  }
+}
+
+// a datasource implementation that renders the data provided by the table view's items property
+class TableViewSource: NSObject, UITableViewDataSource, UITableViewDelegate {
+  
+  var items: [NSObject] = [NSObject]() {
+    didSet {
+      tableView.reloadData()
+    }
+  }
+  
   let tableView: UITableView
   
-  init(tableView: UITableView, items: [NSObject]) {
-    self.items = items
+  init(tableView: UITableView) {
     self.tableView = tableView
     
     super.init()
     
     tableView.dataSource = self
-    // TODO: provide delegate forwarding so that the user can still use this controls delegate
-    tableView.delegate = self
-    
-    tableView.reloadData()
+    tableView.delegateMultiplexer.proxiedDelegate = self
   }
   
   // MARK: - UITableViewDataSource
   
-  private func tableView(tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+  func tableView(tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
     return items.count
   }
   
-  private func tableView(tableView: UITableView, cellForRowAtIndexPath indexPath: NSIndexPath) -> UITableViewCell {
+  func tableView(tableView: UITableView, cellForRowAtIndexPath indexPath: NSIndexPath) -> UITableViewCell {
     // TODO: How do we inform the tableview of the cell name?
     let maybeCell: AnyObject? = tableView.dequeueReusableCellWithIdentifier("Cell")
     if let cell = maybeCell as? UITableViewCell {
@@ -68,7 +111,7 @@ private class TableViewSource: NSObject, UITableViewDataSource, UITableViewDeleg
   
   // MARK: - UITableViewDelegate
   
-  private func tableView(tableView: UITableView, didSelectRowAtIndexPath indexPath: NSIndexPath) {
+  func tableView(tableView: UITableView, didSelectRowAtIndexPath indexPath: NSIndexPath) {
     let selectedItem: AnyObject = items[indexPath.row]
     if let action = tableView.selectionAction {
       action.execute(selectedItem)
